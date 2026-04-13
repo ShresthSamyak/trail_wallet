@@ -1,4 +1,4 @@
-/* Minimal reset — all styling lives in App.css */
+/* index.css — minimal base reset, all design tokens live in App.css */
 *, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
@@ -12,4 +12,6 @@ body {
 
 #root {
   min-height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
