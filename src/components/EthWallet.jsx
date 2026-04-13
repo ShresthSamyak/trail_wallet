@@ -1,182 +1,181 @@
-import { useEffect, useState } from 'react';
+import { useState, useCallback } from 'react';
 import { HDNodeWallet, JsonRpcProvider, formatEther } from 'ethers';
-import { mnemonicToSeed } from 'bip39'; // async version
-
-// SECURITY NOTE: eth.llamarpc.com is a free public RPC. In production use a
-// private RPC (Alchemy / Infura) to avoid rate limits and request logging.
-const provider = new JsonRpcProvider('https://eth.llamarpc.com');
+import { mnemonicToSeed } from 'bip39';
+import WalletCard from './WalletCard';
 
 /**
- * Derives an Ethereum address from a seed at a given account index.
+ * SECURITY WARNING: eth.llamarpc.com is a free public RPC — rate-limited and
+ * not suitable for production. Use a private RPC (Alchemy, Infura, etc.).
+ * This app is for EDUCATIONAL PURPOSES ONLY.
  *
- * Derivation path: m/44'/60'/{index}'/0/0
- *   - 44'  = BIP44 purpose
- *   - 60'  = Ethereum coin type
- *   - {index}' = account index
- *   - 0/0  = external chain / first address
+ * A new provider is created per balance fetch to avoid stale connection state.
+ */
+const ETH_RPC = 'https://eth.llamarpc.com';
+
+/**
+ * Derives an Ethereum address and derivation path from a seed buffer.
  *
- * @param {Buffer|Uint8Array} seed  - 64-byte seed from mnemonicToSeed
- * @param {number}            index - account index
- * @returns {string} checksummed Ethereum address (0x…)
+ * Path: m/44'/60'/{index}'/0/0
+ *   44'  = BIP44 purpose
+ *   60'  = Ethereum coin type (SLIP-0044)
+ *   {index}' = account index
+ *   0/0  = external chain / first address
+ *
+ * @param {Buffer} seed  - 64-byte output of mnemonicToSeed
+ * @param {number} index - account index
+ * @returns {{ address: string, derivationPath: string }}
  */
 function deriveAddress(seed, index) {
-  // HDNodeWallet.fromSeed accepts a Uint8Array / Buffer directly
-  const root = HDNodeWallet.fromSeed(seed);
   const path = `m/44'/60'/${index}'/0/0`;
-  return root.derivePath(path).address; // checksummed 0x… address
+  // HDNodeWallet.fromSeed accepts Buffer (which extends Uint8Array)
+  const address = HDNodeWallet.fromSeed(seed).derivePath(path).address;
+  return { address, derivationPath: path };
 }
-
-// ─── Wallet Card ─────────────────────────────────────────────────────────────
 
 /**
- * Displays a single Ethereum wallet: address + live balance.
- * Fetches its own balance in a useEffect to keep JSX pure.
+ * Fetches the ETH balance for an address from mainnet.
+ *
+ * provider.getBalance returns a BigInt (wei). We use formatEther() which
+ * handles BigInt correctly — never use Number() on wei, it loses precision.
+ *
+ * @param {string} address - checksummed 0x… Ethereum address
+ * @returns {Promise<string>}
  */
-function WalletCard({ address, index }) {
-  const [balance, setBalance] = useState(null);
-  const [status, setStatus] = useState('loading'); // 'loading' | 'ok' | 'error'
-  const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function fetchBalance() {
-      try {
-        setStatus('loading');
-        // provider.getBalance returns a BigInt (wei) in ethers v6
-        const wei = await provider.getBalance(address);
-        if (cancelled) return;
-
-        // formatEther handles BigInt safely — no floating-point precision loss.
-        // It returns a string like "0.001234" which we then format to 6 dp.
-        const eth = parseFloat(formatEther(wei)).toFixed(6);
-        setBalance(eth);
-        setStatus('ok');
-      } catch (err) {
-        if (cancelled) return;
-        console.error('ETH balance fetch failed:', err);
-        setStatus('error');
-      }
-    }
-
-    fetchBalance();
-    return () => { cancelled = true; };
-  }, [address]);
-
-  function copyAddress() {
-    navigator.clipboard.writeText(address);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }
-
-  // Shortened display: 0x1234…abcd
-  const shortAddress = `${address.slice(0, 6)}…${address.slice(-4)}`;
-
-  return (
-    <div className="wallet-card">
-      {/* Accent bar (Ethereum purple) */}
-      <div className="wallet-card-accent eth-accent" />
-
-      <div className="wallet-card-body">
-        {/* Header */}
-        <div className="wallet-card-header">
-          <span className="wallet-label">Wallet #{index + 1}</span>
-          <span className="chain-badge eth-badge">ETH</span>
-        </div>
-
-        {/* Balance */}
-        <div className="balance-display">
-          {status === 'loading' && (
-            <span className="balance-loading">
-              <span className="spinner" /> Fetching…
-            </span>
-          )}
-          {status === 'ok' && (
-            <span className="balance-value">{balance} <span className="balance-unit">ETH</span></span>
-          )}
-          {status === 'error' && (
-            <span className="balance-error">Failed to load</span>
-          )}
-        </div>
-
-        {/* Address row */}
-        <div className="address-row">
-          <span className="address-mono" title={address}>{shortAddress}</span>
-          <button
-            className={`btn btn-ghost btn-xs ${copied ? 'btn-success' : ''}`}
-            onClick={copyAddress}
-            title="Copy full address"
-          >
-            {copied ? '✓' : '⎘ Copy'}
-          </button>
-        </div>
-
-        {/* Full address (selectable) */}
-        <p className="address-full">{address}</p>
-
-        {/* Derivation path */}
-        <p className="derive-path">m/44&apos;/60&apos;/{index}&apos;/0/0</p>
-      </div>
-    </div>
-  );
+async function fetchEthBalance(address) {
+  const provider = new JsonRpcProvider(ETH_RPC);
+  const wei = await provider.getBalance(address);
+  // formatEther converts BigInt wei → decimal ETH string without precision loss
+  return parseFloat(formatEther(wei)).toFixed(6);
 }
 
-// ─── Section ─────────────────────────────────────────────────────────────────
+// ─── Section Component ────────────────────────────────────────────────────────
 
 /**
  * EthWallet section.
- * Each click derives the next account-index wallet from the same seed.
+ *
+ * State architecture: wallets is an array of wallet objects (not raw addresses).
+ * Each object tracks its own balance, loading, and error state.
+ * Balance is fetched HERE (not in WalletCard) so WalletCard stays presentational.
+ *
+ * wallets: Array<{
+ *   id: string,          // unique key, e.g. "eth-0"
+ *   chain: 'eth',
+ *   index: number,
+ *   address: string,
+ *   derivationPath: string,
+ *   balance: string | null,
+ *   loading: boolean,
+ *   error: string | null,
+ * }>
  */
 export default function EthWallet({ mnemonic }) {
-  // wallets: Array<{ address: string, index: number }>
   const [wallets, setWallets] = useState([]);
   const [nextIndex, setNextIndex] = useState(0);
-  const [deriving, setDeriving] = useState(false);
+  const [isAdding, setIsAdding] = useState(false);
 
-  async function addWallet() {
-    setDeriving(true);
+  const handleAddWallet = useCallback(async () => {
+    if (!mnemonic || isAdding) return;
+    setIsAdding(true);
+
     try {
-      // Await the async PBKDF2 seed derivation — do NOT block the thread
+      // mnemonicToSeed is async (PBKDF2) — awaiting keeps the UI responsive
       const seed = await mnemonicToSeed(mnemonic);
-      const address = deriveAddress(seed, nextIndex);
+      const index = nextIndex;
+      const { address, derivationPath } = deriveAddress(seed, index);
+      const id = `eth-${index}`;
 
-      setWallets(prev => [...prev, { address, index: nextIndex }]);
+      // Add wallet immediately with loading state so user sees instant feedback
+      setWallets(prev => [
+        ...prev,
+        { id, chain: 'eth', index, address, derivationPath, balance: null, loading: true, error: null },
+      ]);
       setNextIndex(prev => prev + 1);
+
+      // Fetch balance separately — only for this new wallet, not all wallets
+      try {
+        const balance = await fetchEthBalance(address);
+        setWallets(prev =>
+          prev.map(w => (w.id === id ? { ...w, balance, loading: false } : w))
+        );
+      } catch {
+        setWallets(prev =>
+          prev.map(w => (w.id === id ? { ...w, loading: false, error: 'Failed to fetch balance' } : w))
+        );
+      }
     } catch (err) {
       console.error('ETH derivation failed:', err);
     } finally {
-      setDeriving(false);
+      setIsAdding(false);
     }
-  }
+  }, [mnemonic, nextIndex, isAdding]);
 
   return (
-    <section className="card">
+    <div className="card">
       <div className="card-header">
-        <div className="card-icon eth-icon">Ξ</div>
-        <div>
-          <h2 className="card-title">Ethereum Wallets</h2>
-          <p className="card-subtitle">{wallets.length} wallet{wallets.length !== 1 ? 's' : ''} derived</p>
+        <div className="card-header-left">
+          <div className="card-icon eth-icon">
+            {/* Ethereum diamond logo */}
+            <svg width="14" height="22" viewBox="0 0 256 417" fill="currentColor">
+              <path fillOpacity=".6" d="M127.9 0 125 9.5 0 212.5l127.9 75.7 128-75.7z" />
+              <path d="M0 212.5l127.9 75.7V0z" />
+              <path fillOpacity=".6" d="M127.9 315.8 0 240l127.9 177z" />
+              <path d="M0 240l127.9 177V315.8z" />
+              <path fillOpacity=".2" d="M127.9 288.2l128-75.7-128-58.5z" />
+              <path fillOpacity=".6" d="M255.9 212.5 127.9 136v152.2z" />
+            </svg>
+          </div>
+          <div>
+            <h2 className="card-title">Ethereum</h2>
+            <p className="card-subtitle">
+              {wallets.length} {wallets.length === 1 ? 'account' : 'accounts'} · m/44&apos;/60&apos;
+            </p>
+          </div>
         </div>
+
         <button
-          className="btn btn-primary btn-sm ml-auto"
-          onClick={addWallet}
-          disabled={deriving}
+          className="btn btn-primary btn-sm"
+          onClick={handleAddWallet}
+          disabled={isAdding}
         >
-          {deriving ? 'Deriving…' : '+ Add Wallet'}
+          {isAdding ? (
+            <>
+              <span className="spinner-sm" />
+              Adding...
+            </>
+          ) : (
+            <>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <line x1="12" y1="5" x2="12" y2="19" />
+                <line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
+              Add Wallet
+            </>
+          )}
         </button>
       </div>
 
       {wallets.length === 0 ? (
         <div className="empty-state">
-          <p>No wallets yet. Click <strong>+ Add Wallet</strong> to derive your first Ethereum account.</p>
+          <div className="empty-icon empty-icon-eth">
+            <svg width="18" height="28" viewBox="0 0 256 417" fill="currentColor">
+              <path fillOpacity=".6" d="M127.9 0 125 9.5 0 212.5l127.9 75.7 128-75.7z" />
+              <path d="M0 212.5l127.9 75.7V0z" />
+              <path fillOpacity=".6" d="M127.9 315.8 0 240l127.9 177z" />
+              <path d="M0 240l127.9 177V315.8z" />
+              <path fillOpacity=".2" d="M127.9 288.2l128-75.7-128-58.5z" />
+              <path fillOpacity=".6" d="M255.9 212.5 127.9 136v152.2z" />
+            </svg>
+          </div>
+          <p className="empty-title">No Ethereum accounts</p>
+          <p className="empty-text">Click "Add Wallet" to derive your first account</p>
         </div>
       ) : (
         <div className="wallet-grid">
-          {wallets.map(({ address, index }) => (
-            <WalletCard key={address} address={address} index={index} />
+          {wallets.map(wallet => (
+            <WalletCard key={wallet.id} wallet={wallet} />
           ))}
         </div>
       )}
-    </section>
+    </div>
   );
 }
