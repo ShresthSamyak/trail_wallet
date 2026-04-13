@@ -1,68 +1,71 @@
 import { useState } from 'react';
 import { generateMnemonic } from 'bip39';
+import SeedPhrase from './components/SeedPhrase';
 import SolanaWallet from './components/SolanaWallet';
 import EthWallet from './components/EthWallet';
 import './App.css';
 
+/**
+ * Root application component.
+ *
+ * State lives here so that the mnemonic is the single source of truth.
+ * Both SolanaWallet and EthWallet receive it as a read-only prop and derive
+ * their keypairs independently — no cross-chain state sharing needed.
+ *
+ * SECURITY WARNING: Storing a mnemonic in React state means it lives in
+ * JavaScript memory and is accessible to any script on the page. This is
+ * NOT production-safe. A real wallet would use a hardware enclave or an
+ * encrypted vault and would NEVER expose the raw phrase to the UI layer.
+ */
 export default function App() {
-  // mnemonic is the single source of truth — derived wallets are computed from it
   const [mnemonic, setMnemonic] = useState('');
-  const [mnemonicCopied, setMnemonicCopied] = useState(false);
 
-  function createSeedPhrase() {
-    // generateMnemonic() returns a random 12-word BIP39 mnemonic
-    const phrase = generateMnemonic();
-    setMnemonic(phrase);
-  }
-
-  function copyMnemonic() {
-    navigator.clipboard.writeText(mnemonic);
-    setMnemonicCopied(true);
-    setTimeout(() => setMnemonicCopied(false), 2000);
+  function handleGenerate() {
+    // generateMnemonic() uses the browser's crypto.getRandomValues via bip39
+    setMnemonic(generateMnemonic());
   }
 
   return (
     <div className="app">
-      <header className="app-header">
-        <h1>Multi-Chain Web Wallet</h1>
-        <p className="subtitle">Solana + Ethereum — non-custodial HD wallet</p>
+      {/* ── Top bar ──────────────────────────────────────────────── */}
+      <header className="topbar">
+        <div className="topbar-inner">
+          <div className="logo">
+            <span className="logo-icon">◈</span>
+            <span className="logo-text">ChainWallet</span>
+          </div>
+          <span className="topbar-tag">Testnet / Demo</span>
+        </div>
       </header>
 
-      {/* ── Seed Phrase Section ─────────────────────────────────────── */}
-      <section className="seed-section">
-        <h2>Seed Phrase</h2>
-        <p className="warning">
-          ⚠ Never share your seed phrase. Store it offline in a safe place.
-        </p>
+      {/* ── Page content ─────────────────────────────────────────── */}
+      <main className="main">
+        {/* Hero */}
+        <div className="hero">
+          <h1 className="hero-title">
+            Multi-Chain <span className="gradient-text">HD Wallet</span>
+          </h1>
+          <p className="hero-sub">
+            Derive Solana &amp; Ethereum accounts from a single seed phrase.
+            Non-custodial · BIP39 · BIP44
+          </p>
+        </div>
 
-        <button className="primary-btn" onClick={createSeedPhrase}>
-          {mnemonic ? 'Regenerate Seed Phrase' : 'Create Seed Phrase'}
-        </button>
+        {/* Sections */}
+        <SeedPhrase mnemonic={mnemonic} onGenerate={handleGenerate} />
 
+        {/* Wallet sections appear only after a mnemonic is created */}
         {mnemonic && (
-          <div className="mnemonic-box">
-            {/* Display each word in its own chip for readability */}
-            <div className="mnemonic-words">
-              {mnemonic.split(' ').map((word, i) => (
-                <span className="mnemonic-word" key={i}>
-                  <span className="word-index">{i + 1}.</span> {word}
-                </span>
-              ))}
-            </div>
-            <button className="copy-btn mnemonic-copy-btn" onClick={copyMnemonic}>
-              {mnemonicCopied ? 'Copied!' : 'Copy Seed Phrase'}
-            </button>
+          <div className="wallet-sections">
+            <SolanaWallet mnemonic={mnemonic} />
+            <EthWallet mnemonic={mnemonic} />
           </div>
         )}
-      </section>
+      </main>
 
-      {/* ── Wallet Sections (only shown after mnemonic is generated) ── */}
-      {mnemonic && (
-        <>
-          <SolanaWallet mnemonic={mnemonic} />
-          <EthWallet mnemonic={mnemonic} />
-        </>
-      )}
+      <footer className="footer">
+        <p>For educational purposes only · Never use on mainnet with real funds</p>
+      </footer>
     </div>
   );
 }
